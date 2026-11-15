@@ -1,0 +1,6 @@
+; Purpose: native offline test boundary for CommunityMech #1996, 2026-11-15.
+; Input: native test command. Output: normal test artifacts; all network denied.
+; No validator, provider, matcher or test method is replaced.
+(version 1)
+(allow default)
+(deny network*)

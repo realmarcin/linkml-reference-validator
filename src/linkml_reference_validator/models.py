@@ -363,6 +363,10 @@ class ReferenceValidationConfig(BaseModel):
         default=Path("references_cache"),
         description="Directory for caching downloaded references",
     )
+    source_catalog: Optional[Path] = Field(
+        default=None,
+        description="Explicit local supplementary-source catalog; relative paths use CWD. No fallback.",
+    )
     private_cache_dir: Path = Field(
         default_factory=lambda: Path.home()
         / ".cache"
@@ -832,6 +836,7 @@ class ValidationResult:
     message: Optional[str] = None
     match_result: Optional[SupportingTextMatch] = None
     path: Optional[str] = None  # Path in data structure (e.g., "annotations[0].evidence")
+    source_identity: Optional[dict] = None  # Exact selected asset, extraction and cell identity.
 
 
 @dataclass

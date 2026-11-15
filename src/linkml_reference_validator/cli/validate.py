@@ -1,6 +1,7 @@
 """Validate subcommands for linkml-reference-validator."""
 
 import logging
+import json
 from importlib.util import find_spec
 from pathlib import Path
 from typing import Optional
@@ -314,9 +315,13 @@ def data_command(
             for instance in data:
                 report = validator.validate(instance, target_class=target_class)
                 file_results.extend(report.results)
+                for selection in plugin.source_comparisons:
+                    typer.echo("  Source selection: " + json.dumps(selection, sort_keys=True))
         elif isinstance(data, dict):
             report = validator.validate(data, target_class=target_class)
             file_results = report.results
+            for selection in plugin.source_comparisons:
+                typer.echo("  Source selection: " + json.dumps(selection, sort_keys=True))
         else:
             typer.echo(f"Error: Unexpected data format in {data_file}", err=True)
             files_with_issues += 1

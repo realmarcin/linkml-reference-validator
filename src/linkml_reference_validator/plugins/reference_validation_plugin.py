@@ -15,6 +15,7 @@ from linkml_reference_validator.field_detection import (
     is_title_slot,
 )
 from linkml_reference_validator.models import ReferenceValidationConfig
+from linkml_reference_validator.etl.source_locator import ABSENT
 from linkml_reference_validator.validation.supporting_text_validator import (
     SupportingTextValidator,
 )
@@ -93,6 +94,7 @@ if _LINKML_AVAILABLE:
             self.config = config
             self.validator = SupportingTextValidator(config)
             self.schema_view: Optional[SchemaView] = None
+            self.source_comparisons: list[dict[str, Any]] = []
 
         @property
         def cache_dir(self) -> Path:
@@ -118,6 +120,7 @@ if _LINKML_AVAILABLE:
             """
             if hasattr(context, "schema_view") and context.schema_view:
                 self.schema_view = context.schema_view
+            self.source_comparisons = []
             logger.info("ReferenceValidationPlugin initialized")
 
         def process(
@@ -181,6 +184,28 @@ if _LINKML_AVAILABLE:
             excerpt_fields = self._find_excerpt_fields(class_name)
             title_fields = self._find_title_fields(class_name)
 
+            # A reserved, declared source_locator is an explicit assertion.
+            # An invalid/undeclared locator cannot silently become article-only.
+            source_locator = instance.get("source_locator", ABSENT)
+            selected_references = [self._extract_reference_id(instance[f])
+                                   for f in reference_fields if f in instance]
+            selected_excerpts = [instance[f] for f in excerpt_fields if f in instance]
+            if source_locator is not ABSENT and (
+                "source_locator" not in self.schema_view.class_slots(class_name)
+                or len(selected_references) != 1
+                or not isinstance(selected_references[0], str)
+                or not selected_references[0].strip()
+                or not selected_excerpts
+                or not all(isinstance(value, str) and value.strip() for value in selected_excerpts)
+            ):
+                yield LinkMLValidationResult(
+                    type="reference_validation", severity=Severity.ERROR,
+                    message="Source locator requires a declared slot, one reference and nonempty excerpt",
+                    instantiates=path, context=[path] if path else [],
+                    source="ReferenceValidationPlugin",
+                )
+                return
+
             # Track whether we've validated with excerpt (which includes title validation)
             validated_with_excerpt = False
 
@@ -209,6 +234,7 @@ if _LINKML_AVAILABLE:
                                 reference_id,
                                 expected_title,
                                 f"{path}.{excerpt_field}" if path else excerpt_field,
+                                source_locator=source_locator,
                             )
                             # Break after first successful reference match to avoid duplicates
                             break
@@ -496,6 +522,8 @@ if _LINKML_AVAILABLE:
             reference_id: str,
             expected_title: Optional[str],
             path: str,
+            *,
+            source_locator: Any = ABSENT,
         ) -> Iterator[LinkMLValidationResult]:
             """Validate an excerpt against a reference.
 
@@ -508,9 +536,16 @@ if _LINKML_AVAILABLE:
             Yields:
                 ValidationResult if validation fails
             """
+            # Preserve the old call shape for article-only integrations.
+            options = {} if source_locator is ABSENT else {"source_locator": source_locator}
             result = self.validator.validate(
-                excerpt, reference_id, expected_title=expected_title, path=path
+                excerpt, reference_id, expected_title=expected_title, path=path, **options
             )
+            if source_locator is not ABSENT:
+                self.source_comparisons.append({
+                    "path": path, "is_valid": result.is_valid,
+                    "source_identity": result.source_identity, "message": result.message,
+                })
 
             if not result.is_valid:
                 severity = self._convert_severity(result.severity)
