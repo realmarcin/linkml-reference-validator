@@ -2,9 +2,10 @@
 
 import logging
 import re
-from typing import Optional
+from typing import Any, Optional
 
 from linkml_reference_validator.etl.reference_fetcher import ReferenceFetcher
+from linkml_reference_validator.etl.source_locator import ABSENT, SourceSelectionError, select_source
 from linkml_reference_validator.models import (
     ReferenceContent,
     ReferenceValidationConfig,
@@ -143,6 +144,8 @@ class SupportingTextValidator:
         reference_id: str,
         expected_title: Optional[str] = None,
         path: Optional[str] = None,
+        *,
+        source_locator: Any = ABSENT,
     ) -> ValidationResult:
         """Validate supporting text against a reference.
 
@@ -163,6 +166,11 @@ class SupportingTextValidator:
             >>> # With title validation:
             >>> # result = validator.validate("quote", "PMID:12345678", expected_title="Study Title")
         """
+        # Explicit selection is never a skipped prefix or an article lookup.
+        # None/empty/malformed values are present and must fail, not act absent.
+        if source_locator is not ABSENT:
+            return self._validate_selected(supporting_text, reference_id, source_locator, expected_title, path)
+
         # Check if this prefix should be skipped
         prefix = reference_id.split(":")[0].upper() if ":" in reference_id else ""
         skip_prefixes_upper = [p.upper() for p in self.config.skip_prefixes]
@@ -241,6 +249,42 @@ class SupportingTextValidator:
             match_result=match,
             path=path,
         )
+
+    def _validate_selected(
+        self, text: str, reference_id: str, locator: Any,
+        expected_title: Optional[str], path: Optional[str],
+    ) -> ValidationResult:
+        """Use the unchanged matcher on one replayed cell, with captured provenance."""
+        selected = None
+        try:
+            if not isinstance(text, str) or not text.strip():
+                raise SourceSelectionError("Selected source requires a nonempty text excerpt")
+            selected = select_source(
+                reference_id, locator, self.config.source_catalog, self.fetcher.normalize_reference_id
+            )
+            if expected_title is not None and (
+                not selected.reference_title
+                or self.normalize_text(expected_title) != self.normalize_text(selected.reference_title)
+            ):
+                raise SourceSelectionError("Selected source parent title is missing or mismatched")
+            reference = ReferenceContent(
+                reference_id=reference_id, content=selected.text, content_type="supplement_cell",
+            )
+            match = self.find_text_in_reference(text, reference)
+            selected.verify_unchanged()
+            message = ("Supporting text validated in selected source" if match.found else
+                       match.error_message or "Supporting text not found in selected source")
+            return ValidationResult(
+                is_valid=match.found, reference_id=reference_id, supporting_text=text,
+                severity=ValidationSeverity.INFO if match.found else ValidationSeverity.ERROR,
+                message=message, match_result=match, path=path, source_identity=selected.identity,
+            )
+        except (SourceSelectionError, OSError) as exc:
+            return ValidationResult(
+                is_valid=False, reference_id=reference_id, supporting_text=text,
+                severity=ValidationSeverity.ERROR, message=f"Source selection failed: {exc}", path=path,
+                source_identity=selected.identity if selected else None,
+            )
 
     def find_text_in_reference(
         self,
